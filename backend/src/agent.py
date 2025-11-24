@@ -1,4 +1,7 @@
 import logging
+import json
+import os
+from datetime import datetime
 from dotenv import load_dotenv
 from livekit.agents import (
     Agent,
@@ -19,90 +22,155 @@ logger = logging.getLogger("agent")
 
 load_dotenv(".env.local")
 
+DATA_FILE = "session_history.json"
+LOG_FILE = "wellog.json"
 
-class MurfBrew(Agent):
 
+# ------------------ Persistence Helper ------------------ #
+
+def write_json(filename, entry):
+    """Safely append to a JSON list file."""
+    data = []
+    if os.path.exists(filename):
+        try:
+            with open(filename, "r") as f:
+                data = json.load(f)
+        except json.JSONDecodeError:
+            data = []
+
+    data.append(entry)
+
+    with open(filename, "w") as f:
+        json.dump(data, f, indent=2)
+
+
+def load_last_session():
+    if not os.path.exists(DATA_FILE):
+        return None
+    try:
+        with open(DATA_FILE, "r") as f:
+            data = json.load(f)
+            return data[-1] if data else None
+    except:
+        return None
+
+
+def log_message(role: str, message: str):
+    write_json(LOG_FILE, {
+        "timestamp": datetime.now().isoformat(),
+        "role": role,
+        "message": message.strip()
+    })
+
+
+# ------------------ Agent ------------------ #
+
+class WellMurf(Agent):
     def __init__(self):
         super().__init__(
             instructions="""
-You are MurfBrew, a friendly and confident AI barista from a premium café.
-The user speaks to you through voice.  
+You are a calm and reliable health companion.
 
 Your job:
-- Greet the customer naturally.
-- Take their coffee order step by step.
-- Ask one question at a time in this order: drink → size → hot/iced → milk → extras → confirmation.
-- Remember what they answered.
-- Once the order is fully known, repeat it naturally and ask if you'd like to confirm.
-- If confirmed, close the interaction politely and confidently.
+- Speak naturally and simply.
+- Ask only one question at a time.
+- Ask in this sequence:
+  1) Symptoms
+  2) Duration
+  3) Severity (mild / moderate / severe)
+  4) Possible triggers (sleep, food, stress, exercise, etc.)
 
-Tone rules:
-- Sound like a real barista, not an AI assistant.
-- Keep responses short, casual and natural.
-- No emojis. No robotic phrases.    
-""",
+After collecting answers:
+- Summarize cleanly and ask if they want general wellness tips or continue conversation.
+
+Rules:
+- Never diagnose or recommend treatment.
+- If asked for medical advice, gently tell them to consult a medical professional.
+- Keep tone calm, human, and neutral.
+"""
         )
 
-        # state memory for the order
+        self.reset()
+        self.last_entry = load_last_session()
+
+    def reset(self):
         self.state = {
-            "drink": None,
-            "size": None,
-            "temperature": None,
-            "milk": None,
-            "extras": [],
-            "confirmed": False,
+            "intro": False,
+            "symptoms": None,
+            "duration": None,
+            "severity": None,
+            "trigger": None,
+            "done": False
         }
 
+    async def send(self, ctx, text: str):
+        log_message("agent", text)
+        return await ctx.send_message(text)
+
     async def on_user_message(self, ctx: AgentSession, message: str):
-        msg = message.lower().strip()
+        msg = message.strip()
+        log_message("user", msg)
 
-        # Step 1: drink
-        if self.state["drink"] is None:
-            self.state["drink"] = msg
-            return await ctx.send_message("Nice choice. What size would you like? Small, medium, or large?")
+        # First time greeting
+        if not self.state["intro"]:
+            self.state["intro"] = True
 
-        # Step 2: size
-        if self.state["size"] is None:
-            self.state["size"] = msg
-            return await ctx.send_message("Got it. Would you like it hot or iced?")
+            if self.last_entry:
+                return await self.send(
+                    ctx,
+                    f"Welcome back. Last time you mentioned '{self.last_entry['symptoms']}' with severity '{self.last_entry['severity']}'. How are you feeling today?"
+                )
+            return await self.send(ctx, "Let's begin. What symptom are you experiencing?")
 
-        # Step 3: temperature
-        if self.state["temperature"] is None:
-            self.state["temperature"] = msg
-            return await ctx.send_message("What milk do you want? Whole, skim, oat or almond?")
+        # Step 1 — Symptoms
+        if not self.state["symptoms"]:
+            self.state["symptoms"] = msg
+            return await self.send(ctx, "How long have you been experiencing this?")
 
-        # Step 4: milk
-        if self.state["milk"] is None:
-            self.state["milk"] = msg
-            return await ctx.send_message("Any extras? Sugar, whipped cream, caramel, chocolate or extra espresso shot?")
+        # Step 2 — Duration
+        if not self.state["duration"]:
+            self.state["duration"] = msg
+            return await self.send(ctx, "Would you describe it as mild, moderate, or severe?")
 
-        # Step 5: extras (collect once, then confirm)
-        if not self.state["confirmed"]:
-            if msg not in ["no", "none", "that's all", "done"]:
-                self.state["extras"].append(msg)
+        # Step 3 — Severity
+        if not self.state["severity"]:
+            self.state["severity"] = msg
+            return await self.send(ctx, "Got it. Any idea what may have triggered it? Maybe stress, sleep, food, exercise or something else?")
 
-            self.state["confirmed"] = True
+        # Step 4 — Trigger and Save
+        if not self.state["trigger"]:
+            self.state["trigger"] = msg
+            self.state["done"] = True
 
-            summary = f"Alright, so you ordered a {self.state['size']} {self.state['temperature']} {self.state['drink']} with {self.state['milk']} milk"
-            if self.state["extras"]:
-                summary += f" and extras: {', '.join(self.state['extras'])}."
+            entry = {
+                "timestamp": datetime.now().isoformat(),
+                "symptoms": self.state["symptoms"],
+                "duration": self.state["duration"],
+                "severity": self.state["severity"],
+                "trigger": self.state["trigger"]
+            }
 
-            return await ctx.send_message(summary + " Should I confirm the order?")
+            write_json(DATA_FILE, entry)
 
-        # Final confirmation
-        if "yes" in msg or "confirm" in msg:
-            return await ctx.send_message("Perfect. Your drink is being prepared. Thanks for choosing MurfBrew.")
+            summary = (
+                f"Here's what I understood: you're experiencing '{entry['symptoms']}', "
+                f"for '{entry['duration']}', at a '{entry['severity']}' level, "
+                f"and you think it may be related to '{entry['trigger']}'."
+            )
 
-        return await ctx.send_message("No problem. Would you like to change something or restart?")
+            return await self.send(ctx, summary + " Would you like general wellness tips or continue talking?")
 
+        # After completion
+        return await self.send(ctx, "Alright. I'm here. What would you like next?")
+
+
+# ------------------ LiveKit Runtime ------------------ #
 
 def prewarm(proc: JobProcess):
     proc.userdata["vad"] = silero.VAD.load()
 
 
 async def entrypoint(ctx: JobContext):
-
-    ctx.log_context_fields = { "room": ctx.room.name }
 
     session = AgentSession(
         stt=deepgram.STT(model="nova-3"),
@@ -118,25 +186,18 @@ async def entrypoint(ctx: JobContext):
         preemptive_generation=True,
     )
 
-    usage_collector = metrics.UsageCollector()
+    usage = metrics.UsageCollector()
 
     @session.on("metrics_collected")
-    def _on_metrics_collected(ev: MetricsCollectedEvent):
-        metrics.log_metrics(ev.metrics)
-        usage_collector.collect(ev.metrics)
+    def track(ev: MetricsCollectedEvent):
+        usage.collect(ev.metrics)
 
-    async def log_usage():
-        summary = usage_collector.get_summary()
-        logger.info(f"Usage: {summary}")
-
-    ctx.add_shutdown_callback(log_usage)
+    ctx.add_shutdown_callback(lambda: logger.info(usage.get_summary()))
 
     await session.start(
-        agent=MurfBrew(),
+        agent=WellMurf(),
         room=ctx.room,
-        room_input_options=RoomInputOptions(
-            noise_cancellation=noise_cancellation.BVC(),
-        ),
+        room_input_options=RoomInputOptions(noise_cancellation=noise_cancellation.BVC()),
     )
 
     await ctx.connect()
