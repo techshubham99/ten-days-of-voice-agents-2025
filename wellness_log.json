@@ -1,0 +1,17 @@
+[
+    {
+      "timestamp": "2025-02-24T14:32:11.347291",
+      "symptoms": "headache",
+      "duration": "two days",
+      "severity": "moderate",
+      "context": "lack of sleep"
+    },
+    {
+      "timestamp": "2025-02-25T10:18:52.982114",
+      "symptoms": "sore throat",
+      "duration": "since yesterday",
+      "severity": "mild",
+      "context": "cold weather"
+    }
+  ]
+  
