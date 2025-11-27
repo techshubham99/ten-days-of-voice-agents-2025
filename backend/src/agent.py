@@ -1,7 +1,8 @@
-# zoho_sdr_agent.py
+# agent.py - Fraud Alert Voice Agent for Day 6
 import logging
 import os
 import json
+import sqlite3
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
@@ -24,289 +25,342 @@ from livekit.agents import (
 from livekit.plugins import murf, silero, google, deepgram, noise_cancellation
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
-logger = logging.getLogger("zoho_sdr")
+logger = logging.getLogger("fraud_agent")
 
 load_dotenv(".env.local")
 
-# ---------- Zoho Company Content ---------- #
+# ---------- Database Setup ---------- #
 
-ZOHO_FAQ = {
-    "company_info": {
-        "name": "Zoho Corporation",
-        "description": "Zoho is an Indian multinational technology company that makes computer software and web-based business tools. It offers a comprehensive suite of business, productivity, and collaboration applications.",
-        "founded": "1996",
-        "headquarters": "Chennai, Tamil Nadu, India"
-    },
-    "products": {
-        "main_products": [
-            "Zoho CRM - Customer relationship management",
-            "Zoho Books - Accounting software", 
-            "Zoho Desk - Customer service software",
-            "Zoho Mail - Business email",
-            "Zoho Workplace - Collaboration suite",
-            "Zoho Analytics - Business intelligence"
-        ]
-    },
-    "pricing": {
-        "crm": {
-            "free": "Up to 3 users, basic features",
-            "standard": "₹1,400/user/month - Sales force automation, marketing automation",
-            "professional": "₹2,800/user/month - Advanced features, custom modules",
-            "enterprise": "₹4,200/user/month - AI-powered analytics, advanced security"
-        },
-        "books": {
-            "free": "Up to 1 user, 1000 invoices/year",
-            "standard": "₹4,999/organisation/month - Up to 3 users",
-            "professional": "₹9,999/organisation/month - Up to 10 users",
-            "premium": "₹19,999/organisation/month - Unlimited users"
-        }
-    },
-    "faq": [
+def init_database():
+    """Initialize SQLite database with sample fraud cases"""
+    conn = sqlite3.connect('fraud_cases.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS fraud_cases (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_name TEXT NOT NULL,
+            security_identifier TEXT NOT NULL,
+            card_ending TEXT NOT NULL,
+            case_status TEXT DEFAULT 'pending_review',
+            transaction_name TEXT NOT NULL,
+            transaction_time TEXT NOT NULL,
+            transaction_category TEXT NOT NULL,
+            transaction_source TEXT NOT NULL,
+            amount REAL NOT NULL,
+            merchant_location TEXT NOT NULL,
+            security_question TEXT NOT NULL,
+            security_answer TEXT NOT NULL,
+            outcome_note TEXT DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    # Insert sample fraud cases
+    sample_cases = [
         {
-            "question": "What does Zoho do?",
-            "answer": "Zoho provides a comprehensive suite of business software including CRM, accounting, email, collaboration tools, and more to help businesses manage their operations efficiently."
-        },
-        {
-            "question": "Who is Zoho for?",
-            "answer": "Zoho serves businesses of all sizes - from startups and small businesses to large enterprises across various industries."
-        },
-        {
-            "question": "Do you have a free tier?",
-            "answer": "Yes, most Zoho products offer free plans with limited features. For example, Zoho CRM has a free plan for up to 3 users, and Zoho Books has a free plan for small businesses."
+            'user_name': 'John Sharma',
+            'security_identifier': '12345',
+            'card_ending': '4242',
+            'transaction_name': 'ABC Industry',
+            'transaction_time': '2024-11-27 14:30:00',
+            'transaction_category': 'e-commerce',
+            'transaction_source': 'alibaba.com',
+            'amount': 12500.00,
+            'merchant_location': 'Shanghai, China',
+            'security_question': 'What is your mother\'s maiden name?',
+            'security_answer': 'patel'
         },
         {
-            "question": "How much does Zoho CRM cost?",
-            "answer": "Zoho CRM starts with a free plan for up to 3 users. Paid plans start at ₹1,400 per user per month for the Standard plan, ₹2,800 for Professional, and ₹4,200 for Enterprise."
+            'user_name': 'Priya Kumar',
+            'security_identifier': '67890',
+            'card_ending': '5678',
+            'transaction_name': 'Tech Gadgets Inc',
+            'transaction_time': '2024-11-27 16:45:00',
+            'transaction_category': 'electronics',
+            'transaction_source': 'amazon.in',
+            'amount': 8500.00,
+            'merchant_location': 'Mumbai, India',
+            'security_question': 'What was your first pet\'s name?',
+            'security_answer': 'max'
         },
         {
-            "question": "What is Zoho One?",
-            "answer": "Zoho One is an all-in-one suite that includes over 45 integrated applications for your entire business at ₹2,500 per user per month when billed annually."
-        },
-        {
-            "question": "Can I integrate Zoho with other tools?",
-            "answer": "Yes, Zoho offers extensive integration capabilities with popular third-party applications as well as APIs for custom integrations."
-        },
-        {
-            "question": "Is there a trial period?",
-            "answer": "Yes, most Zoho products offer a 15-day free trial for their paid plans so you can explore all features before committing."
-        },
-        {
-            "question": "Do you offer support?",
-            "answer": "Yes, we offer 24/5 email and chat support for all paid plans, along with comprehensive documentation and community forums."
+            'user_name': 'Rahul Verma',
+            'security_identifier': '11223',
+            'card_ending': '8899',
+            'transaction_name': 'Luxury Watches',
+            'transaction_time': '2024-11-27 18:20:00',
+            'transaction_category': 'luxury_goods',
+            'transaction_source': 'swisswatches.com',
+            'amount': 45000.00,
+            'merchant_location': 'Geneva, Switzerland',
+            'security_question': 'What city were you born in?',
+            'security_answer': 'delhi'
         }
     ]
-}
+    
+    for case in sample_cases:
+        cursor.execute('''
+            INSERT OR IGNORE INTO fraud_cases 
+            (user_name, security_identifier, card_ending, transaction_name, transaction_time, 
+             transaction_category, transaction_source, amount, merchant_location, security_question, security_answer)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            case['user_name'], case['security_identifier'], case['card_ending'],
+            case['transaction_name'], case['transaction_time'], case['transaction_category'],
+            case['transaction_source'], case['amount'], case['merchant_location'],
+            case['security_question'], case['security_answer']
+        ))
+    
+    conn.commit()
+    conn.close()
+    logger.info("Fraud cases database initialized")
 
-LEAD_FIELDS = [
-    "name",
-    "company", 
-    "email",
-    "role",
-    "use_case",
-    "team_size",
-    "timeline"
-]
+def get_fraud_case_by_user(user_name: str) -> Optional[Dict[str, Any]]:
+    """Get fraud case by user name"""
+    conn = sqlite3.connect('fraud_cases.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT * FROM fraud_cases WHERE user_name = ? AND case_status = "pending_review"', (user_name,))
+    row = cursor.fetchone()
+    
+    if row:
+        columns = [col[0] for col in cursor.description]
+        case = dict(zip(columns, row))
+        conn.close()
+        return case
+    
+    conn.close()
+    return None
+
+def update_fraud_case(case_id: int, status: str, outcome_note: str):
+    """Update fraud case status and outcome"""
+    conn = sqlite3.connect('fraud_cases.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        UPDATE fraud_cases 
+        SET case_status = ?, outcome_note = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+    ''', (status, outcome_note, case_id))
+    
+    conn.commit()
+    conn.close()
+    logger.info(f"Updated fraud case {case_id} to status: {status}")
+
+def show_fraud_cases():
+    """Show current fraud cases status"""
+    conn = sqlite3.connect('fraud_cases.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT id, user_name, case_status, transaction_name, amount, card_ending FROM fraud_cases')
+    rows = cursor.fetchall()
+    
+    print("\n" + "="*80)
+    print("📊 CURRENT FRAUD CASES STATUS")
+    print("="*80)
+    print(f"{'ID':<3} | {'User':<12} | {'Transaction':<15} | {'Amount':<10} | {'Card':<6} | {'Status':<15}")
+    print("-" * 80)
+    
+    for row in rows:
+        print(f"{row[0]:<3} | {row[1]:<12} | {row[3]:<15} | ₹{row[4]:>7,.2f} | {row[5]:<6} | {row[2]:<15}")
+    
+    conn.close()
 
 # ---------- Murf TTS voices ---------- #
 
-TTS_SDR = murf.TTS(
-    voice="en-US-matthew",  # Professional SDR voice
-    style="Conversation",
+TTS_FRAUD_AGENT = murf.TTS(
+    voice="en-US-matthew",
+    style="Professional",
     tokenizer=tokenize.basic.SentenceTokenizer(min_sentence_len=2),
     text_pacing=True,
 )
 
-# ---------- SDR Agent ---------- #
+# ---------- Fraud Alert Agent ---------- #
 
-class ZohoSDRAgent(Agent):
+class FraudAlertAgent(Agent):
     """
-    Sales Development Representative agent for Zoho Corporation.
-    Handles FAQ questions and lead capture.
+    Fraud Alert Voice Agent for Bank Security
     """
 
     def __init__(self, **kwargs):
-        instructions = f"""
-You are a friendly and professional Sales Development Representative for Zoho Corporation.
-
-COMPANY INFORMATION:
-- Name: {ZOHO_FAQ['company_info']['name']}
-- Description: {ZOHO_FAQ['company_info']['description']}
-- Headquarters: {ZOHO_FAQ['company_info']['headquarters']}
+        instructions = """
+You are a professional and reassuring Fraud Alert Agent for SecureBank India.
 
 YOUR ROLE:
-1. Greet visitors warmly and introduce yourself as a Zoho SDR
-2. Ask what brought them here and what they're working on
-3. Use the FAQ knowledge to answer questions accurately
-4. Naturally collect lead information during the conversation
-5. End the call professionally when the user indicates they're done
+1. Introduce yourself clearly as a fraud detection representative from SecureBank
+2. Explain that you're calling about a suspicious transaction for security verification
+3. Ask for the customer's name to locate their fraud case
+4. Perform basic security verification using pre-defined questions
+5. Read out the suspicious transaction details clearly
+6. Ask if they recognize and authorized this transaction
+7. Take appropriate action based on their response
+8. End the call professionally with clear next steps
 
-LEAD INFORMATION TO COLLECT:
-- Name
-- Company
-- Email
-- Role
-- Use case (what they want to use Zoho for)
-- Team size
-- Timeline (now / soon / later)
+SECURITY GUIDELINES:
+- NEVER ask for full card numbers, PINs, passwords, or sensitive credentials
+- Use only pre-defined security questions from the database
+- Speak in a calm, professional, and reassuring manner
+- If verification fails, politely end the call without proceeding
+- Always confirm transaction details before taking action
 
-FAQ CONTENT (use this for answering questions):
-{json.dumps(ZOHO_FAQ['faq'], indent=2)}
+CALL FLOW:
+1. Greeting and introduction
+2. Ask for customer name to find their case
+3. Security verification question
+4. Transaction details reading
+5. Transaction confirmation (yes/no)
+6. Action and resolution
+7. Call conclusion
 
-CONVERSATION GUIDELINES:
-- Be conversational and friendly
-- Ask one question at a time
-- Don't make up information - if you don't know, say so
-- Gently steer conversation back to understanding their needs
-- When user says they're done, provide a brief summary and thank them
-- Use the lead collection tools to systematically gather information
-
-ENDING THE CALL:
-When user says things like "that's all", "I'm done", "thanks for your help", 
-give a brief verbal summary of what you discussed and end the call.
+IMPORTANT: When verifying security answers, be flexible with user input. 
+Accept answers in any case (upper/lower) and be tolerant of minor variations.
 """
-        super().__init__(instructions=instructions, tts=TTS_SDR, **kwargs)
+        super().__init__(instructions=instructions, tts=TTS_FRAUD_AGENT, **kwargs)
 
     async def on_enter(self) -> None:
-        # Start with a warm greeting and introduction
+        # Start with professional greeting
         await self.session.generate_reply(
             instructions=(
-                "Greet the visitor warmly as a Zoho Sales Development Representative. "
-                "Introduce yourself briefly and ask what brought them to Zoho today "
-                "and what they're currently working on."
+                "Greet the customer professionally as a fraud detection representative from SecureBank India. "
+                "Explain that this is a security call regarding a suspicious transaction. "
+                "Ask for their full name to locate their case in our system."
             )
         )
 
-    # ---------- Lead Collection Tools ---------- #
+    # ---------- Fraud Detection Tools ---------- #
 
     @function_tool()
-    async def collect_name(self, context: RunContext, name: str) -> str:
-        """Collect the visitor's name"""
+    async def find_fraud_case(self, context: RunContext, user_name: str) -> str:
+        """Find fraud case by user name"""
         session = context.session
-        sdr_state = _ensure_sdr_state(session)
-        sdr_state["lead_data"]["name"] = name
-        sdr_state["collected_fields"].add("name")
-        return f"Thank you, {name}. Nice to meet you!"
-
-    @function_tool()
-    async def collect_company(self, context: RunContext, company: str) -> str:
-        """Collect the visitor's company name"""
-        session = context.session
-        sdr_state = _ensure_sdr_state(session)
-        sdr_state["lead_data"]["company"] = company
-        sdr_state["collected_fields"].add("company")
-        return f"Great, {company}. What industry are you in?"
-
-    @function_tool()
-    async def collect_email(self, context: RunContext, email: str) -> str:
-        """Collect the visitor's email address"""
-        session = context.session
-        sdr_state = _ensure_sdr_state(session)
-        sdr_state["lead_data"]["email"] = email
-        sdr_state["collected_fields"].add("email")
-        return f"Perfect, I've got {email} as your contact."
-
-    @function_tool()
-    async def collect_role(self, context: RunContext, role: str) -> str:
-        """Collect the visitor's role in their company"""
-        session = context.session
-        sdr_state = _ensure_sdr_state(session)
-        sdr_state["lead_data"]["role"] = role
-        sdr_state["collected_fields"].add("role")
-        return f"Understood, as a {role}. What are you looking to achieve with Zoho?"
-
-    @function_tool()
-    async def collect_use_case(self, context: RunContext, use_case: str) -> str:
-        """Collect what the visitor wants to use Zoho for"""
-        session = context.session
-        sdr_state = _ensure_sdr_state(session)
-        sdr_state["lead_data"]["use_case"] = use_case
-        sdr_state["collected_fields"].add("use_case")
-        return f"Thanks for sharing that you need {use_case}. How large is your team?"
-
-    @function_tool()
-    async def collect_team_size(self, context: RunContext, team_size: str) -> str:
-        """Collect the visitor's team size"""
-        session = context.session
-        sdr_state = _ensure_sdr_state(session)
-        sdr_state["lead_data"]["team_size"] = team_size
-        sdr_state["collected_fields"].add("team_size")
-        return f"Got it, {team_size} people. When are you looking to implement - now, soon, or later?"
-
-    @function_tool()
-    async def collect_timeline(self, context: RunContext, timeline: str) -> str:
-        """Collect the implementation timeline"""
-        session = context.session
-        sdr_state = _ensure_sdr_state(session)
-        sdr_state["lead_data"]["timeline"] = timeline
-        sdr_state["collected_fields"].add("timeline")
+        fraud_state = _ensure_fraud_state(session)
         
-        # Check if we have all required fields
-        missing = set(LEAD_FIELDS) - sdr_state["collected_fields"]
-        if not missing:
-            return f"Perfect! I have all the information I need. Is there anything else you'd like to know about Zoho?"
+        case = get_fraud_case_by_user(user_name)
+        if case:
+            fraud_state["current_case"] = case
+            fraud_state["collected_fields"].add("user_name")
+            
+            return (f"Thank you {user_name}. I found a suspicious transaction in our system. "
+                    f"For security verification, please answer this question: {case['security_question']}")
         else:
-            return f"Thanks for the timeline. Is there anything else I can help you with today?"
+            return (f"I'm sorry, I couldn't find any pending fraud cases for {user_name}. "
+                    "This might be a mistake, or the case might have been resolved already. "
+                    "Please contact our customer service for further assistance.")
 
     @function_tool()
-    async def end_call(self, context: RunContext) -> str:
-        """End the call and save lead data"""
+    async def verify_security_answer(self, context: RunContext, answer: str) -> str:
+        """Verify security question answer"""
         session = context.session
-        sdr_state = _ensure_sdr_state(session)
+        fraud_state = _ensure_fraud_state(session)
+        case = fraud_state.get("current_case")
         
-        if sdr_state["lead_data"]:
-            filename = _save_lead_data(sdr_state["lead_data"])
-            summary = _generate_summary(sdr_state["lead_data"])
-            return f"Thank you for speaking with me! Here's a quick summary: {summary}. I've saved your information and our team will follow up shortly. Have a great day!"
+        if not case:
+            return "I don't have an active case to verify. Please start by providing your name."
+        
+        # Normalize both answers for comparison
+        user_answer = answer.lower().strip()
+        correct_answer = case['security_answer'].lower().strip()
+        
+        logger.info(f"Security verification: User said '{user_answer}', expected '{correct_answer}'")
+        
+        # Flexible matching - check if user answer contains the correct answer or vice versa
+        if (user_answer == correct_answer or 
+            correct_answer in user_answer or 
+            user_answer in correct_answer):
+            
+            fraud_state["verified"] = True
+            fraud_state["collected_fields"].add("security_verified")
+            
+            # Read transaction details
+            transaction_details = (
+                f"I'm seeing a transaction of ₹{case['amount']:,.2f} at {case['transaction_name']} "
+                f"through {case['transaction_source']} on {case['transaction_time']}. "
+                f"The transaction was categorized as {case['transaction_category']} and originated from {case['merchant_location']}. "
+                f"This was charged to your card ending with {case['card_ending']}. "
+                "Did you authorize this transaction?"
+            )
+            return transaction_details
         else:
-            return "Thank you for your interest in Zoho! If you have any more questions, feel free to reach out. Have a great day!"
+            fraud_state["verified"] = False
+            return ("I'm sorry, that answer doesn't match our records. For security reasons, "
+                    "I cannot proceed with this verification. Please contact our customer service "
+                    "directly for assistance with any suspicious transactions.")
 
-# ---------- SDR state helpers ---------- #
+    @function_tool()
+    async def confirm_transaction(self, context: RunContext, confirmed: bool) -> str:
+        """Handle transaction confirmation"""
+        session = context.session
+        fraud_state = _ensure_fraud_state(session)
+        case = fraud_state.get("current_case")
+        
+        if not case or not fraud_state.get("verified"):
+            return "We need to complete security verification before discussing transaction details."
+        
+        if confirmed:
+            # Mark as safe
+            update_fraud_case(
+                case['id'], 
+                'confirmed_safe', 
+                'Customer confirmed transaction as legitimate during verification call'
+            )
+            return ("Thank you for confirming this transaction. I'll mark this as verified and safe in our system. "
+                    "No further action is needed. Thank you for your time and for helping us keep your account secure.")
+        else:
+            # Mark as fraudulent
+            update_fraud_case(
+                case['id'],
+                'confirmed_fraud',
+                'Customer denied authorizing this transaction - fraud confirmed'
+            )
+            return (f"I understand this transaction is not authorized. I'm immediately blocking your card "
+                    f"ending with {case['card_ending']} to prevent any further unauthorized transactions. "
+                    f"A new card will be dispatched to your registered address within 2-3 business days. "
+                    f"We've also initiated a dispute process for the fraudulent amount of ₹{case['amount']:,.2f}. "
+                    f"Our fraud team will contact you within 24 hours with further updates. "
+                    f"Thank you for your prompt response in securing your account.")
 
-def _ensure_sdr_state(session) -> Dict[str, Any]:
-    """Ensure SDR state exists in session userdata"""
+    @function_tool()
+    async def end_verification_call(self, context: RunContext) -> str:
+        """End the verification call"""
+        session = context.session
+        fraud_state = _ensure_fraud_state(session)
+        case = fraud_state.get("current_case")
+        
+        if case and not fraud_state.get("verified"):
+            update_fraud_case(
+                case['id'],
+                'verification_failed',
+                'Security verification failed during fraud alert call'
+            )
+        
+        return ("Thank you for your time. If you have any concerns about your account security, "
+                "please contact our 24/7 customer service helpline. Have a secure day.")
+
+# ---------- Fraud state helpers ---------- #
+
+def _ensure_fraud_state(session) -> Dict[str, Any]:
+    """Ensure fraud state exists in session userdata"""
     ud = session.userdata
-    sdr = ud.get("sdr")
-    if not isinstance(sdr, dict):
-        sdr = {
-            "lead_data": {},
+    fraud = ud.get("fraud")
+    if not isinstance(fraud, dict):
+        fraud = {
+            "current_case": None,
+            "verified": False,
             "collected_fields": set()
         }
-        ud["sdr"] = sdr
-    return sdr
-
-def _save_lead_data(lead_data: Dict[str, Any]) -> str:
-    """Save lead data to JSON file"""
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"zoho_lead_{timestamp}.json"
-    
-    lead_record = {
-        "timestamp": datetime.now().isoformat(),
-        "lead_data": lead_data,
-        "conversation_summary": _generate_summary(lead_data)
-    }
-    
-    with open(filename, 'w') as f:
-        json.dump(lead_record, f, indent=2)
-    
-    logger.info(f"Lead data saved to {filename}")
-    return filename
-
-def _generate_summary(lead_data: Dict[str, Any]) -> str:
-    """Generate a summary of the lead"""
-    name = lead_data.get('name', 'Unknown')
-    company = lead_data.get('company', 'Not provided')
-    role = lead_data.get('role', 'Not provided')
-    use_case = lead_data.get('use_case', 'Not provided')
-    team_size = lead_data.get('team_size', 'Not provided')
-    timeline = lead_data.get('timeline', 'Not provided')
-    
-    return (f"Lead from {name} at {company} ({role}) interested in {use_case}. "
-            f"Team size: {team_size}. Timeline: {timeline}.")
+        ud["fraud"] = fraud
+    return fraud
 
 # ---------- Prewarm ---------- #
 
 def prewarm(proc: JobProcess):
     proc.userdata["vad"] = silero.VAD.load()
+    # Initialize database on prewarm
+    init_database()
+    # Show initial database state
+    show_fraud_cases()
 
 # ---------- Entrypoint ---------- #
 
@@ -321,13 +375,13 @@ async def entrypoint(ctx: JobContext):
         llm=google.LLM(
             model="gemini-2.5-flash",
         ),
-        tts=TTS_SDR,
+        tts=TTS_FRAUD_AGENT,
         turn_detection=MultilingualModel(),
         vad=ctx.proc.userdata["vad"],
         preemptive_generation=True,
     )
 
-    # Initialize userdata; SDR state lives under session.userdata["sdr"]
+    # Initialize userdata; fraud state lives under session.userdata["fraud"]
     session.userdata = {}
 
     usage_collector = metrics.UsageCollector()
@@ -343,9 +397,9 @@ async def entrypoint(ctx: JobContext):
 
     ctx.add_shutdown_callback(log_usage)
 
-    # Start with Zoho SDR Agent
+    # Start with Fraud Alert Agent
     await session.start(
-        agent=ZohoSDRAgent(),
+        agent=FraudAlertAgent(),
         room=ctx.room,
         room_input_options=RoomInputOptions(
             noise_cancellation=noise_cancellation.BVC(),
