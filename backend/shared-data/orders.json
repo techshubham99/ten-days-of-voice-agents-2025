@@ -22,5 +22,25 @@
     "total": 60.0,
     "status": "received",
     "type": "grocery"
+  },
+  {
+    "id": "839066fa-3db3-4f84-b3c4-230f647888ed",
+    "created_at": "2025-11-30T09:31:58.793236Z",
+    "status": "CONFIRMED",
+    "items": [
+      {
+        "product_id": "hoodie-001",
+        "name": "Classic Fleece Hoodie",
+        "quantity": 1,
+        "unit_price": 1200,
+        "currency": "INR",
+        "item_total": 1200
+      }
+    ],
+    "total": 1200,
+    "currency": "INR",
+    "buyer": {
+      "name": "Voice Customer"
+    }
   }
 ]
